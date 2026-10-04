@@ -1,14 +1,19 @@
-4EVER FORWARD — Mobile Stability Fix
+4EVER FORWARD — Step 3 -> Results fix (v4)
 
-Upload BOTH files in this package to the ROOT of your GitHub repository:
+This patch fixes the exact screen where Transportation can be selected but
+the flow will not move to the results page.
 
-1. simple-flow-fix.js  (new file)
-2. Dockerfile          (replace the existing Dockerfile)
+Upload BOTH files to the ROOT of the GitHub repo:
 
-This single fix addresses:
-- iPhone/Safari taps not selecting Transportation and other access-barrier choices.
-- Floating ACCOUNT + SYNC button covering the guided Next Step flow.
-- Auto-sync checkbox stretching across the Account panel and causing sideways scrolling.
-- Mobile horizontal overflow inside Account + Sync.
+1. simple-flow-fix.js  — replace the existing file
+2. Dockerfile          — replace the existing file
 
-After GitHub commits both files, Render should auto-deploy from main.
+What changes:
+- Transportation and other access choices still work on iPhone.
+- After an access choice is confirmed, the flow advances to results automatically.
+- The yellow “Find My Next Step” button also gets a direct iPhone-safe handler.
+- Keeps the Account + Sync overlay fix.
+- Keeps the Auto-sync checkbox/mobile overflow fix.
+- Dockerfile adds ?v=4 so Safari does not reuse the previous JavaScript from cache.
+
+After GitHub commits the replacements, let Render deploy the new main commit.
