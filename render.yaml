@@ -1,0 +1,39 @@
+services:
+  - type: web
+    name: 4ever-forward-beta
+    runtime: docker
+    plan: 0.5c-512mb
+    healthCheckPath: /api/health
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase:
+          name: 4ever-forward-db
+          property: connectionString
+      - key: FF_ENV
+        value: production
+      - key: FF_COOKIE_SECURE
+        value: "1"
+      - key: FF_DATA_KEY
+        generateValue: true
+      - key: FF_SUPPORT_EMAIL
+        sync: false
+      - key: FF_SMTP_HOST
+        sync: false
+      - key: FF_SMTP_PORT
+        value: "587"
+      - key: FF_SMTP_USER
+        sync: false
+      - key: FF_SMTP_PASSWORD
+        sync: false
+      - key: FF_SMTP_FROM
+        sync: false
+      - key: FF_SMTP_STARTTLS
+        value: "1"
+
+databases:
+  - name: 4ever-forward-db
+    plan: 0.5c-1g
+    region: oregon
+    postgresMajorVersion: "18"
+    databaseName: four_ever_forward
+    ipAllowList: []
