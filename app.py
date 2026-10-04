@@ -355,10 +355,16 @@ app = FastAPI(title="4EVER FORWARD Public Beta Backend", version="0.2.0", docs_u
 async def security_headers(request: Request, call_next):
     response = await call_next(request)
     response.headers["X-Content-Type-Options"] = "nosniff"
-    response.headers["X-Frame-Options"] = "DENY"
+    replit_preview = not PRODUCTION and bool(os.getenv("REPLIT_DEV_DOMAIN"))
+    if not replit_preview:
+        response.headers["X-Frame-Options"] = "DENY"
     response.headers["Referrer-Policy"] = "no-referrer"
     response.headers["Permissions-Policy"] = "geolocation=(), camera=(), microphone=(), payment=()"
     response.headers["Content-Security-Policy"] = "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; font-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'"
+    if replit_preview:
+        response.headers["Content-Security-Policy"] = response.headers["Content-Security-Policy"].replace(
+            "frame-ancestors 'none'", "frame-ancestors 'self' https://replit.com https://*.replit.com"
+        )
     if COOKIE_SECURE:
         response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
     if request.url.path.startswith("/api/"):
