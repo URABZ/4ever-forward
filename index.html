@@ -3,6 +3,7 @@
 <head>
 <meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>4EVER FORWARD — Simple Flow</title>
+<link rel="icon" href="data:,">
 <style>
 :root{--y:#f7c928;--ink:#111;--paper:#f7f5ef;--white:#fff;--muted:#666;--line:#dedbd2}
 *{box-sizing:border-box}body{margin:0;background:var(--paper);color:var(--ink);font-family:Arial,Helvetica,sans-serif}
@@ -3970,7 +3971,7 @@ out.scrollIntoView({behavior:'smooth',block:'nearest'});
   const readyText={now:'You said you can take one step now, so we can put it directly into My Forward.',show:'You can look at the move first. Nothing is saved until you choose it.',later:'You do not have to commit today. Curiosity counts. Your suggested first move will still be here when you reopen Forward Start.'};
   function tasks(){const a=read(TASK_KEY,[]);return Array.isArray(a)?a:[]}
   function toast(msg){if(window.showToast){window.showToast(msg);return}const el=document.getElementById('myForwardToast');if(el){el.textContent=msg;el.style.opacity='1';el.style.transform='translateX(-50%) translateY(0)';setTimeout(()=>{el.style.opacity='0';el.style.transform='translateX(-50%) translateY(20px)'},1800)}}
-  function open(){const o=document.getElementById('v33Overlay');if(!o)return;o.classList.add('open');document.body.style.overflow='hidden';const s=state();s.lastOpenedAt=Date.now();write(KEY,s);showStep(s.completedAt?4:1);if(s.completedAt)renderResult()}
+  function open(){const o=document.getElementById('v33Overlay');if(!o||document.querySelector('#ffGuide.open'))return;o.classList.add('open');document.body.style.overflow='hidden';const s=state();s.lastOpenedAt=Date.now();write(KEY,s);showStep(s.completedAt?4:1);if(s.completedAt)renderResult()}
   function close(){document.getElementById('v33Overlay')?.classList.remove('open');document.body.style.overflow=''}
   function showStep(n){document.querySelectorAll('[data-v33-step]').forEach(x=>x.classList.toggle('active',Number(x.dataset.v33Step)===n));document.querySelectorAll('#v33Progress span').forEach((x,i)=>x.classList.toggle('on',i<Math.min(n,3)));document.getElementById('v33Progress')?.classList.toggle('v33-hidden',n===4);document.getElementById('v33PriorityGate')?.classList.toggle('v33-hidden',n===4)}
   function select(group,key,value){document.querySelectorAll(`[data-v33-${group}]`).forEach(x=>x.classList.toggle('selected',x.dataset[`v33${group.charAt(0).toUpperCase()+group.slice(1)}`]===value));const s=state();s[key]=value;write(KEY,s);if(group==='need')document.getElementById('v33Next1').disabled=false;if(group==='win')document.getElementById('v33Next2').disabled=false;if(group==='ready')document.getElementById('v33Finish').disabled=false}
@@ -3991,7 +3992,16 @@ out.scrollIntoView({behavior:'smooth',block:'nearest'});
   document.querySelectorAll('[data-v33-back]').forEach(b=>b.addEventListener('click',()=>showStep(Number(b.dataset.v33Back))));
   document.getElementById('v33Finish')?.addEventListener('click',finish);
   window.addEventListener('keydown',e=>{if(e.key==='Escape'&&document.getElementById('v33Overlay')?.classList.contains('open'))close()});
-  window.addEventListener('DOMContentLoaded',()=>{syncSelections();const s=state(),a=tasks();if(!s.completedAt&&!a.length)setTimeout(open,420)});
+  window.addEventListener('DOMContentLoaded',()=>{
+    syncSelections();
+    const query=new URLSearchParams(location.search);
+    if(query.has('full')||query.has('verified')||location.hash==='#myforward')return;
+    const s=state(),a=tasks();
+    if(!s.completedAt&&!a.length)setTimeout(()=>{
+      // Simple Flow is the default onboarding. Do not stack Forward Start over it.
+      if(!document.querySelector('#ffGuide.open'))open();
+    },420);
+  });
 })();
 </script>
 
@@ -4177,14 +4187,14 @@ out.scrollIntoView({behavior:'smooth',block:'nearest'});
 <div id="ffCloudPanel" aria-hidden="true">
   <div class="ff-cloud-card" role="dialog" aria-modal="true" aria-labelledby="ffCloudTitle">
     <div class="ff-cloud-head"><div><div class="ff-cloud-kicker">PUBLIC BETA · USER-OWNED SYNC</div><h3 id="ffCloudTitle">Account + encrypted cloud sync</h3><div class="ff-cloud-muted">Keep the same 4EVER FORWARD thread across devices without giving providers access to your full journey.</div></div><button class="ff-cloud-close" id="ffCloudClose" type="button" aria-label="Close">×</button></div>
-    <div id="ffCloudLoggedOut">
+    <form id="ffCloudLoggedOut">
       <div class="ff-cloud-grid">
         <div class="ff-cloud-field wide"><label>Email</label><input id="ffCloudEmail" type="email" autocomplete="email" placeholder="you@example.com"></div>
         <div class="ff-cloud-field wide"><label>Password</label><input id="ffCloudPassword" type="password" autocomplete="current-password" minlength="10" placeholder="10+ characters"></div>
       </div>
       <div class="ff-cloud-actions"><button class="ff-cloud-btn yellow" id="ffCloudRegister" type="button">CREATE ACCOUNT</button><button class="ff-cloud-btn" id="ffCloudLogin" type="button">SIGN IN</button><button class="ff-cloud-btn soft" id="ffCloudForgot" type="button">FORGOT PASSWORD?</button></div>
       <div class="ff-cloud-status" id="ffCloudAuthStatus">Your browser data stays local until you sign in and explicitly choose a sync direction.</div>
-    </div>
+    </form>
     <div id="ffCloudLoggedIn" hidden>
       <div class="ff-cloud-stats"><div class="ff-cloud-stat"><small>ACCOUNT</small><strong id="ffCloudWho">—</strong></div><div class="ff-cloud-stat"><small>SERVER VERSION</small><strong id="ffCloudVersion">0</strong></div><div class="ff-cloud-stat"><small>LOCAL NAMESPACES</small><strong id="ffCloudLocalCount">0</strong></div></div>
       <div class="ff-cloud-status warn" id="ffCloudSyncStatus">Choose the first sync direction before auto-sync is available.</div>
@@ -4242,6 +4252,7 @@ out.scrollIntoView({behavior:'smooth',block:'nearest'});
   const realSet=localStorage.setItem.bind(localStorage),realRemove=localStorage.removeItem.bind(localStorage),realClear=localStorage.clear.bind(localStorage);
   localStorage.setItem=function(k,v){realSet(k,v);if(SYNC_KEYS.includes(String(k)))schedule()};localStorage.removeItem=function(k){realRemove(k);if(SYNC_KEYS.includes(String(k)))schedule()};localStorage.clear=function(){realClear();schedule()};
   $('ffCloudOpen')?.addEventListener('click',()=>{$('ffCloudPanel').classList.add('open');$('ffCloudPanel').setAttribute('aria-hidden','false');render()});
+  $('ffCloudLoggedOut')?.addEventListener('submit',e=>{e.preventDefault();authDo('login')});
   $('ffCloudClose')?.addEventListener('click',()=>{$('ffCloudPanel').classList.remove('open');$('ffCloudPanel').setAttribute('aria-hidden','true')});
   $('ffCloudPanel')?.addEventListener('click',e=>{if(e.target===$('ffCloudPanel'))$('ffCloudClose').click()});
   $('ffCloudRegister')?.addEventListener('click',()=>authDo('register'));$('ffCloudLogin')?.addEventListener('click',()=>authDo('login'));$('ffCloudForgot')?.addEventListener('click',forgot);$('ffCloudResendVerify')?.addEventListener('click',resendVerify);$('ffCloudUpload')?.addEventListener('click',()=>upload(true));$('ffCloudRestore')?.addEventListener('click',restore);
@@ -4335,8 +4346,10 @@ body.ff-simple-flow-open{overflow:hidden}
     if(!results)return;
     const cards=[...results.querySelectorAll('.ff-result')];
     if(!cards.length)return;
+    // This observer also sees the "Show another option" control being appended.
+    // Leave the existing control alone or its own mutation will keep retriggering us.
+    if(results.querySelector('.ff-simple-more'))return;
     cards.forEach((c,i)=>c.classList.toggle('ff-simple-visible',i===0));
-    results.querySelector('.ff-simple-more')?.remove();
     if(cards.length>1){
       let shown=1;
       const more=document.createElement('button');
@@ -4348,7 +4361,7 @@ body.ff-simple-flow-open{overflow:hidden}
           cards[shown].classList.add('ff-simple-visible');
           shown++;
         }
-        if(shown>=cards.length)more.remove();
+        if(shown>=cards.length)more.hidden=true;
       });
       results.appendChild(more);
     }

@@ -10,7 +10,7 @@ for name in ("index.html", "privacy.html", "reset.html", "terms.html", "simple-f
 
 index = static / "index.html"
 html = index.read_text(encoding="utf-8")
-tag = '<script src="/simple-flow-fix.js?v=4"></script>'
+tag = '<script src="/simple-flow-fix.js?v=5"></script>'
 html = html.replace('<script src="/simple-flow-fix.js"></script>', tag)
 if tag not in html:
     html = html.replace("</body>", tag + "\n</body>", 1)

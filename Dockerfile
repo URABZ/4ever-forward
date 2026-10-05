@@ -6,7 +6,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY app.py .
 COPY index.html privacy.html reset.html terms.html ./static/
 COPY simple-flow-fix.js ./static/simple-flow-fix.js
-RUN python -c "from pathlib import Path; p=Path('/app/static/index.html'); s=p.read_text(encoding='utf-8'); tag='<script src=\"/simple-flow-fix.js?v=4\"></script>'; s=s.replace('<script src=\"/simple-flow-fix.js\"></script>', tag); s=s if tag in s else s.replace('</body>', tag+'\\n</body>', 1); p.write_text(s, encoding='utf-8')"
+RUN python -c "from pathlib import Path; p=Path('/app/static/index.html'); s=p.read_text(encoding='utf-8'); tag='<script src=\"/simple-flow-fix.js?v=5\"></script>'; s=s.replace('<script src=\"/simple-flow-fix.js\"></script>', tag); s=s if tag in s else s.replace('</body>', tag+'\\n</body>', 1); p.write_text(s, encoding='utf-8')"
 RUN mkdir -p /app/data && useradd -r -u 10001 appuser && chown -R appuser:appuser /app
 USER appuser
 EXPOSE 10000
