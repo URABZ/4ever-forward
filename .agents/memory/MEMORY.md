@@ -1,0 +1,1 @@
+- [Email verification boundary](email-verification-boundary.md) — cloud sync stays gated until a real, valid email token is confirmed.

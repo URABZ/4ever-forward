@@ -29,15 +29,19 @@ The web service gets `DATABASE_URL` from the database automatically. Render can 
 
 - `FF_SUPPORT_EMAIL`
 - `FF_SMTP_HOST`
-- `FF_SMTP_USER`
-- `FF_SMTP_PASSWORD`
-- `FF_SMTP_FROM`
+- `FF_SMTP_FROM` — a sender address or domain verified with the SMTP provider
+
+Store `FF_SMTP_USER` and `FF_SMTP_PASSWORD` in Replit Secrets when the provider
+requires SMTP authentication. Configure both or leave both empty only if the
+provider explicitly permits unauthenticated relay. Do not paste credentials into
+chat or commit them to the repository.
 
 Optional:
 
 - `FF_SMTP_PORT` (default 587)
-- `FF_SMTP_STARTTLS` (default 1)
-- `FF_PUBLIC_BASE_URL` only if you want verification/reset links to use a custom domain immediately. If omitted on Render, the app uses `RENDER_EXTERNAL_HOSTNAME`.
+- `FF_SMTP_STARTTLS` (default 1; port 465 uses implicit TLS)
+- `FF_PUBLIC_BASE_URL` if a custom public origin is needed. Replit preview uses
+  `REPLIT_DEV_DOMAIN`; Render uses `RENDER_EXTERNAL_HOSTNAME`.
 
 ## Local run
 
@@ -49,7 +53,9 @@ python -m pip install -r requirements.txt
 
 Open `http://127.0.0.1:8000`.
 
-In local development, email links print to the terminal when SMTP is not configured.
+Without SMTP configuration, registration remains unverified, the API reports
+that delivery failed, and resend returns an explicit service-unavailable error.
+Verification and reset links are never printed to development logs.
 
 ## Public-beta launch gate
 

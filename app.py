@@ -4,26 +4,31 @@ import base64
 import hashlib
 import hmac
 import json
+import logging
 import os
 import re
 import secrets
 import smtplib
+import ssl
 import time
 from email.message import EmailMessage
+from email.utils import parseaddr
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlencode, urlsplit
 
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from fastapi import Cookie, FastAPI, Header, HTTPException, Request, Response
 from fastapi.responses import FileResponse, RedirectResponse
 from pydantic import BaseModel, Field
-from sqlalchemy import BigInteger, ForeignKey, LargeBinary, String, Text, create_engine, delete, func, select, text
+from sqlalchemy import BigInteger, ForeignKey, LargeBinary, String, Text, create_engine, delete, func, or_, select, text, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column
 
 ROOT = Path(__file__).resolve().parent
 ENV = os.getenv("FF_ENV", "development").lower()
 PRODUCTION = ENV == "production"
+LOGGER = logging.getLogger("uvicorn.error")
 COOKIE_NAME = "ff_session"
 SESSION_DAYS = int(os.getenv("FF_SESSION_DAYS", "30"))
 COOKIE_SECURE = os.getenv("FF_COOKIE_SECURE", "1" if PRODUCTION else "0") == "1"
@@ -33,11 +38,27 @@ SUPPORT_EMAIL = os.getenv("FF_SUPPORT_EMAIL", "support@example.com")
 def public_base_url() -> str:
     explicit = os.getenv("FF_PUBLIC_BASE_URL", "").strip().rstrip("/")
     if explicit:
+        parsed = urlsplit(explicit)
+        if (
+            parsed.scheme not in ("http", "https")
+            or not parsed.netloc
+            or parsed.path not in ("", "/")
+            or parsed.query
+            or parsed.fragment
+        ):
+            raise RuntimeError("FF_PUBLIC_BASE_URL must be an HTTP(S) origin without a path or query.")
+        if PRODUCTION and parsed.scheme != "https":
+            raise RuntimeError("FF_PUBLIC_BASE_URL must use HTTPS in production.")
         return explicit
     render_host = os.getenv("RENDER_EXTERNAL_HOSTNAME", "").strip()
     if render_host:
         return f"https://{render_host}"
-    return "http://127.0.0.1:8000"
+    replit_dev_host = os.getenv("REPLIT_DEV_DOMAIN", "").strip()
+    if not PRODUCTION and replit_dev_host:
+        return f"https://{replit_dev_host}"
+    if not PRODUCTION:
+        return "http://127.0.0.1:8000"
+    raise RuntimeError("Set FF_PUBLIC_BASE_URL to the published HTTPS origin.")
 
 DATABASE_URL = os.getenv("DATABASE_URL", f"sqlite:///{ROOT / 'data' / '4ever_forward.sqlite3'}")
 if DATABASE_URL.startswith("postgresql://"):
@@ -175,6 +196,15 @@ class EmailToken(Base):
     created_at: Mapped[int] = mapped_column(BigInteger)
 
 
+class EmailDeliveryError(RuntimeError):
+    """Safe-to-display error for a failed transactional email attempt."""
+
+    def __init__(self, public_message: str, smtp_code: int | None = None):
+        super().__init__(public_message)
+        self.public_message = public_message
+        self.smtp_code = smtp_code
+
+
 class AuthRateEvent(Base):
     __tablename__ = "auth_rate_events"
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
@@ -278,8 +308,21 @@ def state_meta(db: Session, user_id: int) -> tuple[int, int | None]:
     return (row.version, row.updated_at) if row else (0, None)
 
 
-def issue_email_token(db: Session, user_id: int, kind: str, ttl_seconds: int) -> str:
-    db.execute(delete(EmailToken).where(EmailToken.user_id == user_id, EmailToken.kind == kind, EmailToken.used_at.is_(None)))
+def issue_email_token(
+    db: Session,
+    user_id: int,
+    kind: str,
+    ttl_seconds: int,
+    preserve_previous: bool = False,
+) -> str:
+    pending = (EmailToken.user_id == user_id, EmailToken.kind == kind)
+    if preserve_previous:
+        db.execute(delete(EmailToken).where(
+            *pending,
+            or_(EmailToken.used_at.is_not(None), EmailToken.expires_at < now_ts()),
+        ))
+    else:
+        db.execute(delete(EmailToken).where(*pending, EmailToken.used_at.is_(None)))
     raw = secrets.token_urlsafe(32)
     db.add(EmailToken(user_id=user_id, kind=kind, token_hash=sha(raw),
                       expires_at=now_ts() + ttl_seconds, created_at=now_ts()))
@@ -289,33 +332,95 @@ def issue_email_token(db: Session, user_id: int, kind: str, ttl_seconds: int) ->
 def send_email(to_email: str, subject: str, body: str) -> None:
     host = os.getenv("FF_SMTP_HOST", "").strip()
     if not host:
-        if not PRODUCTION and os.getenv("FF_DEV_EMAIL_LOG", "1") == "1":
-            print(f"\n--- DEV EMAIL ---\nTo: {to_email}\nSubject: {subject}\n\n{body}\n--- END EMAIL ---\n")
-            return
-        raise RuntimeError("SMTP is not configured")
-    port = int(os.getenv("FF_SMTP_PORT", "587"))
-    user = os.getenv("FF_SMTP_USER", "")
+        raise EmailDeliveryError(
+            "Email delivery is not configured. Set FF_SMTP_HOST and FF_SMTP_FROM "
+            "to a sender address verified with your provider; set FF_SMTP_USER and "
+            "FF_SMTP_PASSWORD if the provider requires SMTP authentication."
+        )
+    sender = os.getenv("FF_SMTP_FROM", "").strip()
+    _, sender_address = parseaddr(sender)
+    if not sender or not EMAIL_RE.fullmatch(sender_address):
+        raise EmailDeliveryError(
+            "FF_SMTP_FROM must be set to a valid sender address verified with your email provider."
+        )
+    try:
+        port = int(os.getenv("FF_SMTP_PORT", "587"))
+    except ValueError as exc:
+        raise EmailDeliveryError("FF_SMTP_PORT must be a valid port number.") from exc
+    if not 1 <= port <= 65535:
+        raise EmailDeliveryError("FF_SMTP_PORT must be between 1 and 65535.")
+    user = os.getenv("FF_SMTP_USER", "").strip()
     password = os.getenv("FF_SMTP_PASSWORD", "")
-    sender = os.getenv("FF_SMTP_FROM", SUPPORT_EMAIL)
-    use_tls = os.getenv("FF_SMTP_STARTTLS", "1") == "1"
+    if bool(user) != bool(password):
+        raise EmailDeliveryError(
+            "Set both FF_SMTP_USER and FF_SMTP_PASSWORD, or leave both empty if your provider permits unauthenticated relay."
+        )
+    starttls_value = os.getenv("FF_SMTP_STARTTLS", "1").strip().lower()
+    if starttls_value not in {"1", "true", "yes", "0", "false", "no"}:
+        raise EmailDeliveryError("FF_SMTP_STARTTLS must be 1 or 0.")
+    use_starttls = starttls_value in {"1", "true", "yes"}
+    if port != 465 and not use_starttls:
+        raise EmailDeliveryError(
+            "Unencrypted SMTP is disabled. Use port 587 with FF_SMTP_STARTTLS=1, or port 465 with implicit TLS."
+        )
     msg = EmailMessage()
     msg["From"] = sender
     msg["To"] = to_email
     msg["Subject"] = subject
     msg.set_content(body)
-    with smtplib.SMTP(host, port, timeout=15) as smtp:
-        if use_tls:
-            smtp.starttls()
-        if user:
-            smtp.login(user, password)
-        smtp.send_message(msg)
+    context = ssl.create_default_context()
+    try:
+        if port == 465:
+            with smtplib.SMTP_SSL(host, port, timeout=15, context=context) as smtp:
+                smtp.ehlo()
+                if user:
+                    smtp.login(user, password)
+                smtp.send_message(msg)
+        else:
+            with smtplib.SMTP(host, port, timeout=15) as smtp:
+                smtp.ehlo()
+                smtp.starttls(context=context)
+                smtp.ehlo()
+                if user:
+                    smtp.login(user, password)
+                smtp.send_message(msg)
+    except smtplib.SMTPAuthenticationError as exc:
+        raise EmailDeliveryError(
+            "The SMTP provider rejected authentication. Check FF_SMTP_USER and FF_SMTP_PASSWORD.",
+            getattr(exc, "smtp_code", None),
+        ) from exc
+    except smtplib.SMTPSenderRefused as exc:
+        raise EmailDeliveryError(
+            "The SMTP provider rejected FF_SMTP_FROM. Verify that sender address or domain with your provider.",
+            getattr(exc, "smtp_code", None),
+        ) from exc
+    except smtplib.SMTPResponseException as exc:
+        raise EmailDeliveryError(
+            f"The SMTP provider rejected the message (response {exc.smtp_code}). Check its sender and account settings.",
+            getattr(exc, "smtp_code", None),
+        ) from exc
+    except (smtplib.SMTPException, OSError, TimeoutError) as exc:
+        raise EmailDeliveryError(
+            "Could not complete SMTP delivery. Check FF_SMTP_HOST, FF_SMTP_PORT, TLS, and provider availability."
+        ) from exc
 
 
-def send_verification(db: Session, user: User) -> None:
-    token = issue_email_token(db, user.id, "verify", 24 * 3600)
-    link = f"{public_base_url()}/api/auth/verify?token={token}"
-    send_email(user.email, "Verify your 4EVER FORWARD account",
-               f"Verify your email to enable secure cloud sync:\n\n{link}\n\nIf you did not create this account, ignore this message.")
+def prepare_verification(
+    db: Session,
+    user: User,
+    preserve_previous: bool = False,
+) -> tuple[str, str, str]:
+    token = issue_email_token(db, user.id, "verify", 24 * 3600, preserve_previous=preserve_previous)
+    try:
+        base_url = public_base_url()
+    except RuntimeError as exc:
+        raise EmailDeliveryError(str(exc)) from exc
+    link = f"{base_url}/api/auth/verify?{urlencode({'token': token})}"
+    return (
+        "Verify your 4EVER FORWARD account",
+        f"Verify your email to enable secure cloud sync:\n\n{link}\n\nIf you did not create this account, ignore this message.",
+        sha(token),
+    )
 
 
 def send_reset(db: Session, user: User) -> None:
@@ -323,6 +428,13 @@ def send_reset(db: Session, user: User) -> None:
     link = f"{public_base_url()}/reset.html?token={token}"
     send_email(user.email, "Reset your 4EVER FORWARD password",
                f"Use this link within 30 minutes to reset your password:\n\n{link}\n\nIf you did not request this, ignore this message.")
+
+
+def log_email_failure(event: str, user_id: int, exc: EmailDeliveryError) -> None:
+    LOGGER.error(
+        "%s email delivery failed (user_id=%s, error_type=%s, smtp_code=%s)",
+        event, user_id, type(exc).__name__, exc.smtp_code,
+    )
 
 
 class Credentials(BaseModel):
@@ -385,6 +497,8 @@ def health() -> dict[str, Any]:
 @app.post("/api/auth/register")
 def register(payload: Credentials, request: Request, response: Response) -> dict[str, Any]:
     email = clean_email(payload.email)
+    delivery_error: EmailDeliveryError | None = None
+    subject = body = ""
     with db_session() as db:
         rate_limit(db, "register", client_ip(request), 5, 3600)
         salt, digest = hash_password(payload.password)
@@ -398,22 +512,30 @@ def register(payload: Credentials, request: Request, response: Response) -> dict
         db.add(JourneyState(user_id=user.id, version=0))
         token, csrf = create_session(db, user.id)
         db.add(SyncAudit(user_id=user.id, event="account_created", version=0, created_at=now_ts()))
-        verification_sent = True
         try:
-            send_verification(db, user)
-        except Exception:
-            # Account creation must not fail just because transactional email is
-            # temporarily unavailable or misconfigured. The verification token
-            # remains stored so the user can resend verification later.
-            verification_sent = False
-            db.add(SyncAudit(user_id=user.id, event="verification_email_failed", version=0, created_at=now_ts()))
+            subject, body, _ = prepare_verification(db, user)
+        except EmailDeliveryError as exc:
+            delivery_error = exc
         db.commit()
         user_id = user.id
+        user_email = user.email
+    if delivery_error is None:
+        try:
+            send_email(user_email, subject, body)
+        except EmailDeliveryError as exc:
+            delivery_error = exc
+    verification_sent = delivery_error is None
+    if delivery_error is not None:
+        log_email_failure("Verification", user_id, delivery_error)
+        with db_session() as db:
+            db.add(SyncAudit(user_id=user_id, event="verification_email_failed", version=0, created_at=now_ts()))
+            db.commit()
     set_session_cookie(response, token)
     message = (
         "Account created. Check your email to verify your account and enable cloud sync."
         if verification_sent else
-        "Account created. Verification email could not be sent yet. You can sign in now and resend verification from Account + Sync."
+        f"Account created, but the verification email was not sent. {delivery_error.public_message} "
+        "Correct the email settings, then use Resend Verification Email in Account + Sync."
     )
     return {"authenticated": True, "user": {"id": user_id, "email": email, "role": "member", "email_verified": False},
             "csrf": csrf, "state_version": 0, "state_updated_at": None,
@@ -470,11 +592,43 @@ def resend_verification(request: Request, ff_session: str | None = Cookie(defaul
     require_csrf(sess, x_csrf_token)
     if user.email_verified_at:
         return {"ok": True}
+    delivery_error: EmailDeliveryError | None = None
+    subject = body = ""
+    new_token_hash = ""
+    user_id = user.id
+    user_email = user.email
     with db_session() as db:
         rate_limit(db, "resend", f"{client_ip(request)}|{user.email}", 3, 3600)
         fresh = db.get(User, user.id)
-        send_verification(db, fresh)
+        if not fresh or fresh.email_verified_at:
+            db.commit()
+            return {"ok": True}
+        user_email = fresh.email
+        try:
+            subject, body, new_token_hash = prepare_verification(db, fresh, preserve_previous=True)
+        except EmailDeliveryError as exc:
+            delivery_error = exc
         db.commit()
+    if delivery_error is None:
+        try:
+            send_email(user_email, subject, body)
+        except EmailDeliveryError as exc:
+            delivery_error = exc
+    if delivery_error is None:
+        with db_session() as db:
+            db.execute(update(EmailToken).where(
+                EmailToken.user_id == user_id,
+                EmailToken.kind == "verify",
+                EmailToken.used_at.is_(None),
+                EmailToken.token_hash != new_token_hash,
+            ).values(used_at=now_ts()))
+            db.commit()
+    if delivery_error is not None:
+        log_email_failure("Verification resend", user_id, delivery_error)
+        with db_session() as db:
+            db.add(SyncAudit(user_id=user_id, event="verification_email_failed", version=0, created_at=now_ts()))
+            db.commit()
+        raise HTTPException(status_code=503, detail=delivery_error.public_message)
     return {"ok": True}
 
 
@@ -486,8 +640,15 @@ def verify_email(token: str) -> RedirectResponse:
         if not et:
             return RedirectResponse("/?verified=invalid", status_code=303)
         user = db.get(User, et.user_id)
+        if not user:
+            return RedirectResponse("/?verified=invalid", status_code=303)
+        verified_at = now_ts()
         user.email_verified_at = now_ts()
-        et.used_at = now_ts()
+        db.execute(update(EmailToken).where(
+            EmailToken.user_id == user.id,
+            EmailToken.kind == "verify",
+            EmailToken.used_at.is_(None),
+        ).values(used_at=verified_at))
         db.add(SyncAudit(user_id=user.id, event="email_verified", version=None, created_at=now_ts()))
         db.commit()
     return RedirectResponse("/?verified=1", status_code=303)
